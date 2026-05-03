@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Записи · {{ camera.name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin">
+  <header class="top">
+    <h1>Записи: {{ camera.name }} (ID {{ camera.id }})</h1>
+    <a href="/admin" class="btn">← В админку</a>
+  </header>
+
+  <section class="card">
+    <h2>Файлы ({{ files|length }})</h2>
+    {% if not files %}
+      <p class="muted">Записей пока нет. Включи REC в админке.</p>
+    {% else %}
+      <table class="cams">
+        <thead><tr><th>Файл</th><th>Размер</th><th></th></tr></thead>
+        <tbody>
+        {% for f in files %}
+          <tr>
+            <td>{{ f.name }}</td>
+            <td>{{ '%.2f'|format(f.size / 1024 / 1024) }} MB</td>
+            <td>
+              <a class="btn small" href="/admin/recordings/{{ camera.id }}/file?name={{ f.name|urlencode }}">⬇ Скачать</a>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+</body>
+</html>

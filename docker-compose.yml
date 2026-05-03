@@ -1,0 +1,19 @@
+services:
+  mjpeg-grid:
+    build: .
+    container_name: mjpeg-grid
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./recordings:/app/recordings
+    environment:
+      - SNAPSHOT_TIMEOUT=4.0
+      - MAX_CONCURRENT=32
+      - STREAM_FPS=5.0
+      - REC_FPS=5.0
+      - REC_SEGMENT_BYTES=104857600
+      - REC_SEGMENT_SECONDS=3600
+      - ADMIN_LOGIN=admin
+      - ADMIN_PASSWORD=strongpassword123

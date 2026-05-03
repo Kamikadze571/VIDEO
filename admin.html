@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · MJPEG Grid</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin">
+  <header class="top">
+    <h1>Admin</h1>
+    <a href="/" class="btn">← К сетке</a>
+  </header>
+
+  <section class="card">
+    <h2>Добавить одну камеру</h2>
+    <form method="post" action="/admin/add" class="row">
+      <input name="name" placeholder="Название" required>
+      <input name="url" placeholder="http://host:port/snapshot?..." required style="flex:2">
+      <button type="submit">Добавить</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Массовое добавление</h2>
+    <p class="muted">По одному URL на строку. Каждая камера будет проверена, нерабочие добавятся как неактивные.</p>
+    <textarea id="bulk-urls" rows="6" placeholder="http://host1/snap&#10;http://host2/snap&#10;..."></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="bulk-add">Добавить все</button>
+      <span id="bulk-status" class="muted"></span>
+    </div>
+    <div id="bulk-results"></div>
+  </section>
+
+  <section class="card">
+    <h2>Список ({{ cameras|length }}) — перетаскивай для сортировки</h2>
+    <table class="cams">
+      <thead>
+        <tr>
+          <th></th><th>ID</th><th>Имя</th><th>URL</th>
+          <th>Активна</th><th>Запись</th><th>Действия</th>
+        </tr>
+      </thead>
+      <tbody id="cams-tbody">
+      {% for c in cameras %}
+        <tr data-id="{{ c.id }}" class="{{ 'inactive' if not c.active else '' }}">
+          <td class="drag" title="Перетащить">⋮⋮</td>
+          <td>{{ c.id }}</td>
+          <td>
+            <form method="post" action="/admin/update/{{ c.id }}" class="inline edit-form">
+              <input name="name" value="{{ c.name }}">
+          </td>
+          <td>
+              <input name="url" value="{{ c.url }}" style="width:100%">
+          </td>
+          <td>
+              <button type="submit" title="Сохранить">💾</button>
+            </form>
+            <button class="toggle-active" data-id="{{ c.id }}" data-active="{{ 1 if c.active else 0 }}">
+              {{ '✓' if c.active else '✗' }}
+            </button>
+          </td>
+          <td>
+            <label class="switch">
+              <input type="checkbox" class="rec-toggle" data-id="{{ c.id }}" {{ 'checked' if c.recording else '' }}>
+              <span>REC</span>
+            </label>
+          </td>
+          <td class="actions">
+            <a class="btn small" href="/stream/{{ c.id }}" target="_blank">Live</a>
+            <a class="btn small" href="/admin/recordings/{{ c.id }}">Записи</a>
+            <button class="btn small probe" data-id="{{ c.id }}">Тест</button>
+            <form method="post" action="/admin/delete/{{ c.id }}" class="inline" onsubmit="return confirm('Удалить камеру {{ c.id }}?')">
+              <button type="submit" class="danger small">🗑</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
