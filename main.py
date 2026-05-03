@@ -64,6 +64,18 @@ async def load_global_settings() -> dict:
     return {"fps": fps, "tile_size": tile, "ip_url_template": tpl}
 
 
+async def resolve_tab(tab_param: int | None) -> dict:
+    """Возвращает активную вкладку: переданную (если валидна) или первую."""
+    tabs = await db.list_tabs()
+    if not tabs:
+        await db.add_tab(db.DEFAULT_TAB_NAME)
+        tabs = await db.list_tabs()
+    active = next((t for t in tabs if t["id"] == tab_param), None) if tab_param else None
+    if active is None:
+        active = tabs[0]
+    return {"tabs": tabs, "active": active}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client, sem
@@ -134,10 +146,9 @@ async def _probe(url: str) -> bool:
 
 
 def _next_default_name(existing: list[dict]) -> int:
-    """Возвращает следующий N для имени 'Camera N' с учётом существующих."""
-    used = set()
+    used: set[int] = set()
     for c in existing:
-        m = re.match(r"^Camera (\d+)$", c["name"] or "")
+        m = re.match(r"^(?:Camera|Камера) (\d+)$", c["name"] or "")
         if m:
             used.add(int(m.group(1)))
     n = 1
@@ -149,14 +160,17 @@ def _next_default_name(existing: list[dict]) -> int:
 # ---------------- public ----------------
 
 @app.get("/")
-async def index(request: Request):
-    cams = await db.list_cameras(only_active=True)
+async def index(request: Request, tab: int | None = None):
+    state = await resolve_tab(tab)
+    cams = await db.list_cameras(only_active=True, tab_id=state["active"]["id"])
     settings = await load_global_settings()
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
             "cameras": cams,
+            "tabs": state["tabs"],
+            "active_tab": state["active"],
             "fps": settings["fps"],
             "tile_size": settings["tile_size"],
         },
@@ -164,8 +178,13 @@ async def index(request: Request):
 
 
 @app.get("/api/cameras")
-async def api_cameras():
-    return await db.list_cameras(only_active=True)
+async def api_cameras(tab: int | None = None):
+    return await db.list_cameras(only_active=True, tab_id=tab)
+
+
+@app.get("/api/tabs")
+async def api_tabs():
+    return await db.list_tabs()
 
 
 @app.get("/snap/{cam_id}")
@@ -231,14 +250,24 @@ async def stream(cam_id: int):
 # ---------------- admin ----------------
 
 @app.get("/admin")
-async def admin(request: Request, _: str = Depends(auth)):
-    cams = await db.list_cameras()
+async def admin(
+    request: Request, tab: int | None = None, _: str = Depends(auth)
+):
+    state = await resolve_tab(tab)
+    cams = await db.list_cameras(tab_id=state["active"]["id"])
+    all_cams = await db.list_cameras()
+    counts: dict[int, int] = {}
+    for c in all_cams:
+        counts[c["tab_id"]] = counts.get(c["tab_id"], 0) + 1
     settings = await load_global_settings()
     return templates.TemplateResponse(
         "admin.html",
         {
             "request": request,
             "cameras": cams,
+            "tabs": state["tabs"],
+            "active_tab": state["active"],
+            "tab_counts": counts,
             "ip_template": settings["ip_url_template"],
             "default_fps": settings["fps"],
             "tile_size": settings["tile_size"],
@@ -251,27 +280,90 @@ async def admin_whoami(user: str = Depends(auth)):
     return JSONResponse({"user": user, "ok": True})
 
 
+# ---------- tabs ----------
+
+@app.post("/admin/tabs/add")
+async def admin_tabs_add(name: str = Form(...), _: str = Depends(auth)):
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    tab_id = await db.add_tab(name)
+    return JSONResponse({"ok": True, "id": tab_id, "name": name})
+
+
+@app.post("/admin/tabs/rename/{tab_id}")
+async def admin_tabs_rename(
+    tab_id: int, name: str = Form(...), _: str = Depends(auth)
+):
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    if not await db.get_tab(tab_id):
+        raise HTTPException(404, "tab not found")
+    await db.rename_tab(tab_id, name)
+    return JSONResponse({"ok": True, "id": tab_id, "name": name})
+
+
+@app.post("/admin/tabs/delete/{tab_id}")
+async def admin_tabs_delete(tab_id: int, _: str = Depends(auth)):
+    if not await db.get_tab(tab_id):
+        raise HTTPException(404, "tab not found")
+    target = await db.delete_tab(tab_id)
+    if target is None:
+        raise HTTPException(400, "Нельзя удалить последнюю вкладку")
+    await db.renumber()
+    return JSONResponse({"ok": True, "moved_to": target})
+
+
+@app.post("/admin/tabs/reorder")
+async def admin_tabs_reorder(request: Request, _: str = Depends(auth)):
+    body = await request.json()
+    order = body.get("order", [])
+    if not isinstance(order, list) or not all(isinstance(i, int) for i in order):
+        raise HTTPException(400, "bad order")
+    await db.reorder_tabs(order)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/admin/cameras/{cam_id}/move")
+async def admin_camera_move(
+    cam_id: int, tab_id: int = Form(...), _: str = Depends(auth)
+):
+    cam = await db.get_camera(cam_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    ok = await db.move_camera(cam_id, tab_id)
+    if not ok:
+        raise HTTPException(400, "bad tab_id")
+    await db.renumber()
+    return JSONResponse({"ok": True})
+
+
+# ---------- cameras CRUD ----------
+
 @app.post("/admin/add")
 async def admin_add(
     name: str = Form(""),
     url: str = Form(...),
+    tab_id: int = Form(...),
     _: str = Depends(auth),
 ):
     url = url.strip()
     if not url:
         raise HTTPException(400, "url required")
+    if not await db.get_tab(tab_id):
+        raise HTTPException(400, "bad tab_id")
     if await db.find_by_url(url):
-        # не добавляем дубль — редирект с флагом в query
-        return RedirectResponse("/admin?dup=1", status_code=303)
+        return RedirectResponse(f"/admin?tab={tab_id}&dup=1", status_code=303)
 
     existing = await db.list_cameras()
     if not name.strip():
-        name = f"Camera {_next_default_name(existing)}"
+        name = f"Камера {_next_default_name(existing)}"
 
     active = 1 if await _probe(url) else 0
-    await db.add_camera(name.strip(), url, active=active)
+    await db.add_camera(name.strip(), url, tab_id=tab_id, active=active)
     await db.renumber()
-    return RedirectResponse("/admin", status_code=303)
+    return RedirectResponse(f"/admin?tab={tab_id}", status_code=303)
 
 
 @app.post("/admin/bulk_add")
@@ -279,8 +371,11 @@ async def admin_bulk_add(
     urls: str = Form(...),
     as_ip: int = Form(0),
     template: str = Form(""),
+    tab_id: int = Form(...),
     _: str = Depends(auth),
 ):
+    if not await db.get_tab(tab_id):
+        raise HTTPException(400, "bad tab_id")
     raw_lines = [u.strip() for u in urls.splitlines() if u.strip()]
     if not raw_lines:
         return JSONResponse({"added": 0, "skipped": 0, "results": []})
@@ -291,12 +386,11 @@ async def admin_bulk_add(
         )
         if "{ip}" not in tpl:
             return JSONResponse(
-                {"error": "template must contain {ip}"}, status_code=400
+                {"error": "Шаблон должен содержать {ip}"}, status_code=400
             )
         await db.set_setting("ip_url_template", tpl)
         raw_lines = [expand_ip(line, tpl) for line in raw_lines]
 
-    # дедупликация: внутри списка + против БД
     existing_urls = {c["url"] for c in await db.list_cameras()}
     seen: set[str] = set()
     lines: list[str] = []
@@ -315,10 +409,9 @@ async def admin_bulk_add(
 
     results = []
     for url, ok in zip(lines, probes):
-        # имя с дефолтной нумерацией — финально проставится через renumber()
         existing = await db.list_cameras()
-        name = f"Camera {_next_default_name(existing)}"
-        cam_id = await db.add_camera(name, url, active=1 if ok else 0)
+        name = f"Камера {_next_default_name(existing)}"
+        cam_id = await db.add_camera(name, url, tab_id=tab_id, active=1 if ok else 0)
         results.append({"id": cam_id, "url": url, "name": name, "ok": ok})
 
     await db.renumber()
@@ -329,11 +422,13 @@ async def admin_bulk_add(
 
 @app.post("/admin/delete/{cam_id}")
 async def admin_delete(cam_id: int, _: str = Depends(auth)):
+    cam = await db.get_camera(cam_id)
+    tab_qs = f"?tab={cam['tab_id']}" if cam else ""
     await db.set_recording(cam_id, 0)
     await recorder.sync()
     await db.delete_camera(cam_id)
     await db.renumber()
-    return RedirectResponse("/admin", status_code=303)
+    return RedirectResponse(f"/admin{tab_qs}", status_code=303)
 
 
 @app.post("/admin/bulk_delete")
@@ -371,8 +466,10 @@ async def admin_update(
     url: str = Form(...),
     _: str = Depends(auth),
 ):
+    cam = await db.get_camera(cam_id)
+    tab_qs = f"?tab={cam['tab_id']}" if cam else ""
     await db.update_camera(cam_id, name.strip(), url.strip())
-    return RedirectResponse("/admin", status_code=303)
+    return RedirectResponse(f"/admin{tab_qs}", status_code=303)
 
 
 @app.post("/admin/active/{cam_id}")
@@ -396,9 +493,12 @@ async def admin_recording(
 async def admin_reorder(request: Request, _: str = Depends(auth)):
     body = await request.json()
     order = body.get("order", [])
+    tab_id = body.get("tab_id")
     if not isinstance(order, list) or not all(isinstance(i, int) for i in order):
         raise HTTPException(400, "bad order")
-    await db.reorder(order)
+    if not isinstance(tab_id, int):
+        raise HTTPException(400, "bad tab_id")
+    await db.reorder(tab_id, order)
     return JSONResponse({"ok": True})
 
 
@@ -427,11 +527,11 @@ async def admin_settings(
 ):
     tpl = ip_url_template.strip()
     if "{ip}" not in tpl:
-        raise HTTPException(400, "ip_url_template must contain {ip}")
+        raise HTTPException(400, "Шаблон должен содержать {ip}")
     if not (0.5 <= default_fps <= 30):
-        raise HTTPException(400, "default_fps out of range (0.5-30)")
+        raise HTTPException(400, "FPS вне диапазона (0.5–30)")
     if not (120 <= tile_size <= 800):
-        raise HTTPException(400, "tile_size out of range (120-800)")
+        raise HTTPException(400, "Размер тайла вне диапазона (120–800)")
     await db.set_setting("ip_url_template", tpl)
     await db.set_setting("default_fps", str(default_fps))
     await db.set_setting("tile_size", str(int(tile_size)))

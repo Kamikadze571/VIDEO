@@ -1,9 +1,12 @@
 const grid = document.getElementById('grid');
+const tabsNav = document.getElementById('tabs');
 const cameras = JSON.parse(grid.dataset.cameras);
+const ACTIVE_TAB_ID = parseInt(grid.dataset.activeTab, 10);
 const FPS = parseFloat(grid.dataset.fps) || 5;
 const TILE = parseInt(grid.dataset.tileSize, 10) || 320;
 const pauseBtn = document.getElementById('pause');
 const editBtn = document.getElementById('edit-mode');
+const addTabBtn = document.getElementById('add-tab');
 
 const intervalMs = 1000 / FPS;
 let paused = false;
@@ -28,7 +31,7 @@ function buildTile(cam) {
     <img alt="">
     <span class="status"></span>
     <span class="label">${escapeHtml(cam.name)}</span>
-    <a class="live-link" href="/stream/${cam.id}" target="_blank" rel="noopener">live</a>
+    <a class="live-link" href="/stream/${cam.id}" target="_blank" rel="noopener">поток</a>
   `;
   const img = tile.querySelector('img');
   grid.appendChild(tile);
@@ -83,7 +86,7 @@ setInterval(tick, 50);
 
 pauseBtn.addEventListener('click', () => {
   paused = !paused;
-  pauseBtn.textContent = paused ? 'resume' : 'pause';
+  pauseBtn.textContent = paused ? 'возобновить' : 'пауза';
   pauseBtn.classList.toggle('active', paused);
 });
 
@@ -96,7 +99,7 @@ grid.addEventListener('dblclick', (e) => {
   else tile.requestFullscreen();
 });
 
-// =================== edit mode + auth ===================
+// =================== auth ===================
 async function checkAuth(header) {
   const r = await fetch('/admin/whoami', {
     headers: header ? { 'Authorization': header } : {},
@@ -106,15 +109,13 @@ async function checkAuth(header) {
 
 async function ensureAuth() {
   if (authHeader && await checkAuth(authHeader)) return true;
-
-  const login = prompt('admin login:', 'admin');
+  const login = prompt('Логин админа:', 'admin');
   if (!login) return false;
-  const password = prompt('password:');
+  const password = prompt('Пароль:');
   if (password == null) return false;
-
   const header = 'Basic ' + btoa(`${login}:${password}`);
   if (!(await checkAuth(header))) {
-    alert('wrong credentials');
+    alert('Неверный логин или пароль');
     return false;
   }
   authHeader = header;
@@ -122,11 +123,15 @@ async function ensureAuth() {
   return true;
 }
 
+function authedFetch(url, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (authHeader) headers['Authorization'] = authHeader;
+  return fetch(url, Object.assign({}, opts, { headers }));
+}
+
+// =================== edit mode ===================
 editBtn.addEventListener('click', async () => {
-  if (editMode) {
-    setEditMode(false);
-    return;
-  }
+  if (editMode) { setEditMode(false); return; }
   if (!(await ensureAuth())) return;
   setEditMode(true);
 });
@@ -134,23 +139,23 @@ editBtn.addEventListener('click', async () => {
 function setEditMode(on) {
   editMode = on;
   document.body.classList.toggle('edit-mode', on);
-  editBtn.textContent = on ? 'done' : 'edit';
+  editBtn.textContent = on ? 'готово' : 'правка';
   editBtn.classList.toggle('active', on);
 
   for (const { tile } of tiles.values()) {
     if (on) {
       tile.setAttribute('draggable', 'true');
-      attachDragHandlers(tile);
+      attachTileDrag(tile);
     } else {
       tile.removeAttribute('draggable');
     }
   }
 }
 
-// =================== drag & drop ===================
+// =================== drag & drop tiles ===================
 let dragTile = null;
 
-function attachDragHandlers(tile) {
+function attachTileDrag(tile) {
   if (tile.__dragAttached) return;
   tile.__dragAttached = true;
 
@@ -165,6 +170,7 @@ function attachDragHandlers(tile) {
   tile.addEventListener('dragend', async () => {
     tile.classList.remove('dragging');
     grid.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
+    tabsNav.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
     if (dragTile) await saveOrder();
     dragTile = null;
   });
@@ -176,7 +182,7 @@ function attachDragHandlers(tile) {
     const after =
       (e.clientY - rect.top) > rect.height / 2 ||
       ((e.clientY - rect.top) > rect.height * 0.25 &&
-        (e.clientX - rect.left) > rect.width / 2);
+       (e.clientX - rect.left) > rect.width / 2);
     grid.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
     tile.classList.add('drop-target');
     if (after) tile.after(dragTile);
@@ -187,21 +193,17 @@ function attachDragHandlers(tile) {
 }
 
 async function saveOrder() {
-  const order = [...grid.querySelectorAll('.tile')]
-    .map(t => parseInt(t.dataset.id, 10));
+  const order = [...grid.querySelectorAll('.tile')].map(t => parseInt(t.dataset.id, 10));
   try {
-    const r = await fetch('/admin/reorder', {
+    const r = await authedFetch('/admin/reorder', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authHeader || '',
-      },
-      body: JSON.stringify({ order }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tab_id: ACTIVE_TAB_ID, order }),
     });
     if (r.status === 401) {
       sessionStorage.removeItem('admin_auth');
       authHeader = null;
-      alert('session expired');
+      alert('Сессия истекла, нажми «правка» ещё раз');
       setEditMode(false);
       return;
     }
@@ -210,3 +212,55 @@ async function saveOrder() {
     console.error('reorder failed', e);
   }
 }
+
+// =================== tabs as drop targets ===================
+tabsNav.querySelectorAll('.tab[data-tab-id]').forEach(tab => {
+  tab.addEventListener('dragover', (e) => {
+    if (!editMode || !dragTile) return;
+    e.preventDefault();
+    tab.classList.add('drop-target');
+  });
+  tab.addEventListener('dragleave', () => {
+    tab.classList.remove('drop-target');
+  });
+  tab.addEventListener('drop', async (e) => {
+    if (!editMode || !dragTile) return;
+    e.preventDefault();
+    tab.classList.remove('drop-target');
+    const targetTab = parseInt(tab.dataset.tabId, 10);
+    if (targetTab === ACTIVE_TAB_ID) { dragTile = null; return; }
+    const camId = parseInt(dragTile.dataset.id, 10);
+    dragTile = null;
+    await moveCameraToTab(camId, targetTab);
+  });
+});
+
+async function moveCameraToTab(camId, tabId) {
+  const fd = new FormData();
+  fd.append('tab_id', String(tabId));
+  try {
+    const r = await authedFetch(`/admin/cameras/${camId}/move`, {
+      method: 'POST', body: fd,
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    location.reload();
+  } catch (e) {
+    alert('Ошибка перемещения: ' + e.message);
+  }
+}
+
+// =================== add tab ===================
+addTabBtn.addEventListener('click', async () => {
+  if (!(await ensureAuth())) return;
+  const name = prompt('Название новой вкладки:');
+  if (!name || !name.trim()) return;
+  const fd = new FormData();
+  fd.append('name', name.trim());
+  try {
+    const r = await authedFetch('/admin/tabs/add', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    location.reload();
+  } catch (e) {
+    alert('Ошибка создания вкладки: ' + e.message);
+  }
+});

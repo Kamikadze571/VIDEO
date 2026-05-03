@@ -1,43 +1,23 @@
 # MJPEG Grid Viewer
 
 FastAPI-приложение для просмотра, записи и стриминга снепшотов с IP-камер.
-Минималистичный тёмный UI в духе Grok/xAI.
+Минималистичный тёмный UI в духе Grok/xAI. Полностью русифицирован.
 
 ## Фичи
 
-- Сетка камер на главной (`/`) — открыта, IntersectionObserver грузит ТОЛЬКО видимые тайлы (±200px), скрытые не дёргают апстрим.
-- Запись на диск идёт независимо от вкладки и видимости — фоновые asyncio-таски на сервере.
-- Edit Mode на главной — кнопка `edit` запрашивает пароль, тащишь тайлы, порядок мгновенно сохраняется.
-- Админка (`/admin`) — Basic Auth, миниатюры камер у каждой строки.
-- Дедупликация по URL: при добавлении (одиночном и bulk) дубликаты игнорируются. Кнопка `remove dups` чистит существующие.
-- Авто-нумерация: имена `Camera N` пересчитываются после каждого add/delete (кастомные имена не трогаются). Кнопка `renumber` для ручного запуска.
-- Глобальные настройки в админке: default FPS, tile size, IP url template — все в БД, применяются ко всем клиентам.
-- Массовое добавление с галочкой `add as ip` (раскрытие IP по шаблону).
-- Массовое удаление через чекбоксы (двухступенчатое подтверждение).
-- Drag & Drop сортировка в админке и на главной.
-- Запись MJPEG: 1ч / 100MB сегменты, `recordings/{cam_id}_{date}/`.
-- Live MJPEG `/stream/{cam_id}` — играется в браузере и VLC.
-- Авто-проверка камер каждые 10 минут: 3 неудачи подряд → `active=0`, при первом успехе → `active=1`.
-
-## Структура
-
-```
-mjpeg-grid/
-├── app/
-│   ├── main.py
-│   ├── db.py
-│   ├── recorder.py
-│   ├── health.py
-│   ├── static/{app.js, admin.js, style.css}
-│   └── templates/{index.html, admin.html, recordings.html}
-├── data/                # SQLite (создаётся)
-├── recordings/          # MJPEG записи (создаётся)
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-├── mjpeg-grid.service
-└── README.md
-```
+- **Вкладки**: камеры группируются по именованным вкладкам ("Улица", "Дом", "Склад"...). Перетаскиванием камера переезжает между вкладками. По умолчанию — одна вкладка "Все камеры".
+- **Сетка камер на главной** (`/`): открыта, IntersectionObserver грузит ТОЛЬКО видимые тайлы (±200px), скрытые не дёргают апстрим.
+- **Запись на диск** идёт независимо от вкладки и видимости — фоновые asyncio-таски на сервере.
+- **Edit Mode** на главной: кнопка `правка` запрашивает пароль, тащишь тайлы внутри вкладки или на другую вкладку для перемещения, можно создать новую вкладку.
+- **Админка** (`/admin`): Basic Auth, миниатюры камер, управление вкладками (создание/переименование/удаление).
+- **Дедупликация по URL**: при добавлении дубликаты пропускаются. Кнопка `Удалить дубли` чистит существующие.
+- **Авто-нумерация**: имена `Камера N` сквозные по всем вкладкам, пересчитываются после изменений. Кастомные имена не трогаются.
+- **Глобальные настройки** в админке: FPS, размер тайла, шаблон IP-URL.
+- **Массовое добавление** с режимом IP (раскрытие шаблона по `{ip}`/`{port}`).
+- **Массовое удаление** через чекбоксы (двухступенчатое подтверждение).
+- **Drag & Drop** сортировка в админке и на главной.
+- **Live MJPEG** `/stream/{cam_id}` — играется в браузере и VLC.
+- **Авто-проверка** камер каждые 10 минут: 3 неудачи подряд → `active=0`, при первом успехе → `active=1`.
 
 ## Деплой через Docker
 
@@ -49,19 +29,24 @@ docker compose up -d --build
 
 Грид: `http://<VPS_IP>:8080/` · Админка: `http://<VPS_IP>:8080/admin`
 
-## Деплой через systemd
+## Структура
 
-```bash
-sudo mkdir -p /opt/mjpeg-grid && sudo chown $USER /opt/mjpeg-grid
-rsync -a ./ /opt/mjpeg-grid/
-cd /opt/mjpeg-grid
-python3 -m venv venv
-venv/bin/pip install -r requirements.txt
-venv/bin/pip install uvloop httptools
-sudo cp mjpeg-grid.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now mjpeg-grid
-journalctl -u mjpeg-grid -f
+```
+mjpeg-grid/
+├── app/
+│   ├── main.py
+│   ├── db.py            # tabs + cameras + settings + миграции
+│   ├── recorder.py
+│   ├── health.py
+│   ├── static/{app.js, admin.js, style.css}
+│   └── templates/{index.html, admin.html, recordings.html}
+├── data/                # SQLite (создаётся)
+├── recordings/          # MJPEG записи (создаётся)
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── mjpeg-grid.service
+└── README.md
 ```
 
 ## Переменные окружения
@@ -78,42 +63,45 @@ journalctl -u mjpeg-grid -f
 | `REC_SEGMENT_SECONDS` | `3600` | Ротация записи по времени |
 | `HEALTH_CHECK_INTERVAL` | `600` | Период автопроверки (сек) |
 | `HEALTH_FAIL_THRESHOLD` | `3` | Неудач подряд → `active=0` |
-| `IP_URL_TEMPLATE` | `http://{ip}/snapshot.cgi` | Дефолтный шаблон IP-режима (можно править в админке) |
-| `DEFAULT_FPS` | `5.0` | Дефолтный FPS грида (можно править в админке) |
-| `DEFAULT_TILE_SIZE` | `320` | Дефолтный размер тайла, px (можно править в админке) |
+| `IP_URL_TEMPLATE` | `http://{ip}/snapshot.cgi` | Дефолтный шаблон IP |
+| `DEFAULT_FPS` | `5.0` | Дефолтный FPS грида |
+| `DEFAULT_TILE_SIZE` | `320` | Дефолтный размер тайла, px |
+
+## Использование вкладок
+
+- В админке вкладки в шапке. Клик по вкладке — переключение, кнопки `✎` и `×` рядом — переименовать/удалить (двойное нажатие на `×` подтверждает удаление). При удалении вкладки её камеры переезжают в первую оставшуюся.
+- Чтобы переместить камеру в другую вкладку — тащи строку таблицы (или тайл на главной в режиме `правка`) на нужную вкладку сверху.
+- Кнопка `+ новая вкладка` создаёт вкладку с заданным именем.
+- Адресуется через `?tab=N`. Без параметра показывается первая вкладка.
 
 ## Эндпоинты
 
-| Метод | Путь | Auth | Описание |
-|---|---|---|---|
-| GET | `/` | — | Сетка |
-| GET | `/snap/{id}` | — | Прокси-снепшот |
-| GET | `/stream/{id}` | — | MJPEG поток |
-| GET | `/admin` | Basic | Админка |
-| GET | `/admin/whoami` | Basic | Пинг auth (Edit Mode) |
-| POST | `/admin/add` | Basic | Добавить одну (с дедупом) |
-| POST | `/admin/bulk_add` | Basic | Массовое добавление + as_ip + дедуп |
-| POST | `/admin/delete/{id}` | Basic | Удалить одну |
-| POST | `/admin/bulk_delete` | Basic | Удалить массово (JSON: ids) |
-| POST | `/admin/dedupe` | Basic | Удалить все дубликаты по URL |
-| POST | `/admin/renumber` | Basic | Пересчитать position и Camera N |
-| POST | `/admin/update/{id}` | Basic | Обновить имя/url |
-| POST | `/admin/active/{id}` | Basic | Включить/выключить |
-| POST | `/admin/recording/{id}` | Basic | Запись on/off |
-| POST | `/admin/probe/{id}` | Basic | Проверить одну |
-| POST | `/admin/probe_all` | Basic | Проверить все |
-| POST | `/admin/reorder` | Basic | Сохранить порядок |
-| POST | `/admin/settings` | Basic | Настройки (fps, tile_size, ip_template) |
-| GET | `/admin/recordings/{id}` | Basic | Список записей |
-| GET | `/admin/recordings/{id}/file` | Basic | Скачать запись |
-
-## Архитектура
-
-- IntersectionObserver на фронте + `inflight`-флаг → видимые тайлы дёргают `/snap`, скрытые молчат.
-- Запись (`RecorderManager`) — отдельный фоновый таск на каждую камеру с REC, не зависит от клиентов.
-- `httpx.AsyncClient` + keep-alive + `asyncio.Semaphore(MAX_CONCURRENT)` ограничивает upstream.
-- `HealthLoop` ходит на ВСЕ камеры (включая выключенные) и сам управляет `active`.
-- SQLite + миграции через `PRAGMA table_info`. Глобальные настройки в `settings` (kv).
-- Дедупликация по URL: при `bulk_add` фильтруется до запроса к камерам, при `dedupe` — оставляется первая по position.
-- Renumber: position идёт 0..N-1, имена `Camera N` пересчитываются по индексу, кастомные имена не трогаются.
-- Edit Mode на главной: Basic Auth кэшируется в `sessionStorage`, передаётся в Authorization при `/admin/reorder`.
+| Метод | Путь | Auth |
+|---|---|---|
+| GET | `/?tab=N` | — |
+| GET | `/api/cameras?tab=N` | — |
+| GET | `/api/tabs` | — |
+| GET | `/snap/{id}` | — |
+| GET | `/stream/{id}` | — |
+| GET | `/admin?tab=N` | Basic |
+| GET | `/admin/whoami` | Basic |
+| POST | `/admin/tabs/add` | Basic |
+| POST | `/admin/tabs/rename/{id}` | Basic |
+| POST | `/admin/tabs/delete/{id}` | Basic |
+| POST | `/admin/tabs/reorder` | Basic |
+| POST | `/admin/cameras/{id}/move` | Basic |
+| POST | `/admin/add` | Basic |
+| POST | `/admin/bulk_add` | Basic |
+| POST | `/admin/delete/{id}` | Basic |
+| POST | `/admin/bulk_delete` | Basic |
+| POST | `/admin/dedupe` | Basic |
+| POST | `/admin/renumber` | Basic |
+| POST | `/admin/update/{id}` | Basic |
+| POST | `/admin/active/{id}` | Basic |
+| POST | `/admin/recording/{id}` | Basic |
+| POST | `/admin/probe/{id}` | Basic |
+| POST | `/admin/probe_all` | Basic |
+| POST | `/admin/reorder` | Basic |
+| POST | `/admin/settings` | Basic |
+| GET | `/admin/recordings/{id}` | Basic |
+| GET | `/admin/recordings/{id}/file` | Basic |

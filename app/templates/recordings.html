@@ -3,29 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>recordings · {{ camera.name }}</title>
+  <title>Записи · {{ camera.name }}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="admin">
   <header class="top">
-    <div class="brand">recordings <span class="muted">· {{ camera.name }} · id {{ camera.id }}</span></div>
-    <a href="/admin" class="btn">← admin</a>
+    <div class="brand">записи <span class="muted">· {{ camera.name }} · id {{ camera.id }}</span></div>
+    <a href="/admin?tab={{ camera.tab_id }}" class="btn">← в админку</a>
   </header>
 
   <section class="card">
-    <h2>files ({{ files|length }})</h2>
+    <h2>Файлы ({{ files|length }})</h2>
     {% if not files %}
-      <p class="muted">пусто. включи rec в админке.</p>
+      <p class="muted">Записей пока нет. Включи REC в админке.</p>
     {% else %}
       <table class="cams">
-        <thead><tr><th>file</th><th>size</th><th></th></tr></thead>
+        <thead><tr><th>Файл</th><th>Размер</th><th></th></tr></thead>
         <tbody>
         {% for f in files %}
           <tr>
             <td><span class="mono">{{ f.name }}</span></td>
-            <td class="mono">{{ '%.2f'|format(f.size / 1024 / 1024) }} mb</td>
+            <td class="mono">{{ '%.2f'|format(f.size / 1024 / 1024) }} МБ</td>
             <td>
-              <a class="btn small" href="/admin/recordings/{{ camera.id }}/file?name={{ f.name|urlencode }}">download</a>
+              <a class="btn small" href="/admin/recordings/{{ camera.id }}/file?name={{ f.name|urlencode }}">скачать</a>
             </td>
           </tr>
         {% endfor %}

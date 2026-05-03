@@ -3,23 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cameras</title>
+  <title>Камеры</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="top">
-    <div class="brand">cameras<span class="dot">·</span><span class="count">{{ cameras|length }}</span></div>
+    <div class="brand">камеры<span class="dot">·</span><span class="count">{{ cameras|length }}</span></div>
     <div class="controls">
-      <button id="pause">pause</button>
-      <button id="edit-mode" title="перетаскивание (нужен пароль)">edit</button>
-      <a href="/admin" class="btn">admin</a>
+      <button id="pause">пауза</button>
+      <button id="edit-mode" title="перетаскивание (нужен пароль админа)">правка</button>
+      <a href="/admin?tab={{ active_tab.id }}" class="btn">админка</a>
     </div>
   </header>
+
+  <nav class="tabs" id="tabs"
+       data-active="{{ active_tab.id }}"
+       data-tabs='{{ tabs|tojson }}'>
+    {% for t in tabs %}
+    <a class="tab{% if t.id == active_tab.id %} active{% endif %}"
+       href="/?tab={{ t.id }}"
+       data-tab-id="{{ t.id }}">{{ t.name }}</a>
+    {% endfor %}
+    <button id="add-tab" class="tab tab-add" title="новая вкладка">+</button>
+  </nav>
 
   <main id="grid" class="grid"
         data-cameras='{{ cameras|tojson }}'
         data-fps="{{ fps }}"
         data-tile-size="{{ tile_size }}"
+        data-active-tab="{{ active_tab.id }}"
         style="--tile:{{ tile_size }}px"></main>
 
   <script src="/static/app.js"></script>

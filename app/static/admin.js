@@ -1,7 +1,83 @@
-// =================== thumbnails: hide broken ===================
+const ACTIVE_TAB_ID = parseInt(
+  document.getElementById('tabs').dataset.active, 10
+);
+
+// =================== thumbnails ===================
 document.querySelectorAll('img.thumb').forEach(img => {
-  img.addEventListener('error', () => {
-    img.classList.add('thumb-broken');
+  img.addEventListener('error', () => img.classList.add('thumb-broken'));
+});
+
+// =================== tabs management ===================
+const addTabBtn = document.getElementById('add-tab');
+addTabBtn.addEventListener('click', async () => {
+  const name = prompt('Название новой вкладки:');
+  if (!name || !name.trim()) return;
+  const fd = new FormData();
+  fd.append('name', name.trim());
+  try {
+    const r = await fetch('/admin/tabs/add', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    location.reload();
+  } catch (e) {
+    alert('Ошибка: ' + e.message);
+  }
+});
+
+document.querySelectorAll('.tab-rename').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = btn.dataset.tabId;
+    const wrap = btn.closest('.tab-wrap');
+    const current = wrap.querySelector('.tab').textContent.trim().replace(/\s*\(\d+\)$/, '');
+    const name = prompt('Новое имя вкладки:', current);
+    if (!name || !name.trim() || name === current) return;
+    const fd = new FormData();
+    fd.append('name', name.trim());
+    try {
+      const r = await fetch(`/admin/tabs/rename/${id}`, { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      location.reload();
+    } catch (err) {
+      alert('Ошибка: ' + err.message);
+    }
+  });
+});
+
+let tabDeleteConfirmId = null;
+document.querySelectorAll('.tab-delete').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = btn.dataset.tabId;
+    if (tabDeleteConfirmId !== id) {
+      tabDeleteConfirmId = id;
+      btn.classList.add('confirm');
+      btn.textContent = '✓';
+      btn.title = 'нажми ещё раз для удаления';
+      setTimeout(() => {
+        if (tabDeleteConfirmId === id) {
+          tabDeleteConfirmId = null;
+          btn.classList.remove('confirm');
+          btn.textContent = '×';
+          btn.title = 'удалить вкладку';
+        }
+      }, 4000);
+      return;
+    }
+    tabDeleteConfirmId = null;
+    try {
+      const r = await fetch(`/admin/tabs/delete/${id}`, { method: 'POST' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || ('HTTP ' + r.status));
+      }
+      location.href = '/admin';
+    } catch (err) {
+      alert('Ошибка: ' + err.message);
+      btn.classList.remove('confirm');
+      btn.textContent = '×';
+    }
   });
 });
 
@@ -22,7 +98,7 @@ bulkBtn.addEventListener('click', async () => {
   const text = bulkArea.value.trim();
   if (!text) return;
   bulkBtn.disabled = true;
-  bulkStatus.textContent = 'checking & adding...';
+  bulkStatus.textContent = 'проверяю и добавляю...';
   bulkResults.innerHTML = '';
 
   try {
@@ -30,14 +106,15 @@ bulkBtn.addEventListener('click', async () => {
     fd.append('urls', text);
     fd.append('as_ip', asIpCb.checked ? '1' : '0');
     fd.append('template', ipTplInput.value || '');
+    fd.append('tab_id', String(ACTIVE_TAB_ID));
     const r = await fetch('/admin/bulk_add', { method: 'POST', body: fd });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      throw new Error(err.error || ('HTTP ' + r.status));
+      throw new Error(err.error || err.detail || ('HTTP ' + r.status));
     }
     const data = await r.json();
-    let msg = `added: ${data.added}`;
-    if (data.skipped) msg += ` · skipped (duplicates): ${data.skipped}`;
+    let msg = `добавлено: ${data.added}`;
+    if (data.skipped) msg += ` · пропущено (дубликаты): ${data.skipped}`;
     bulkStatus.textContent = msg;
     for (const item of data.results) {
       const div = document.createElement('div');
@@ -47,7 +124,7 @@ bulkBtn.addEventListener('click', async () => {
     }
     setTimeout(() => location.reload(), 1500);
   } catch (e) {
-    bulkStatus.textContent = 'error: ' + e.message;
+    bulkStatus.textContent = 'ошибка: ' + e.message;
   } finally {
     bulkBtn.disabled = false;
   }
@@ -63,7 +140,7 @@ document.querySelectorAll('.rec-toggle').forEach(cb => {
       const r = await fetch(`/admin/recording/${id}`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error('HTTP ' + r.status);
     } catch (e) {
-      alert('error: ' + e.message);
+      alert('Ошибка: ' + e.message);
       cb.checked = !cb.checked;
     }
   });
@@ -82,12 +159,12 @@ document.querySelectorAll('.toggle-active').forEach(btn => {
       const r = await fetch(`/admin/active/${id}`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       btn.dataset.active = String(next);
-      btn.textContent = next ? 'on' : 'off';
+      btn.textContent = next ? 'вкл' : 'выкл';
       btn.closest('tr').classList.toggle('inactive', !next);
       const fc = btn.parentElement.querySelector('.fc');
       if (fc) fc.textContent = '0';
     } catch (e) {
-      alert('error: ' + e.message);
+      alert('Ошибка: ' + e.message);
     }
   });
 });
@@ -108,7 +185,7 @@ document.querySelectorAll('.probe').forEach(btn => {
       const at = tr.querySelector('.toggle-active');
       if (at) {
         at.dataset.active = data.ok ? '1' : '0';
-        at.textContent = data.ok ? 'on' : 'off';
+        at.textContent = data.ok ? 'вкл' : 'выкл';
       }
       const fc = tr.querySelector('.fc');
       if (fc && data.ok) fc.textContent = '0';
@@ -131,40 +208,40 @@ async function runAction(btn, url, label) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     if (typeof data.deleted === 'number') {
-      actionStatus.textContent = `removed: ${data.deleted}`;
+      actionStatus.textContent = `удалено: ${data.deleted}`;
     } else if (typeof data.checked === 'number') {
-      actionStatus.textContent = `checked ${data.checked} · ok ${data.ok} · fail ${data.fail}`;
+      actionStatus.textContent = `проверено ${data.checked} · ok ${data.ok} · fail ${data.fail}`;
     } else {
-      actionStatus.textContent = 'done';
+      actionStatus.textContent = 'готово';
     }
     setTimeout(() => location.reload(), 800);
   } catch (e) {
-    actionStatus.textContent = 'error: ' + e.message;
+    actionStatus.textContent = 'ошибка: ' + e.message;
     btn.disabled = false;
   }
 }
 
-document.getElementById('check-all').addEventListener('click', e => runAction(e.currentTarget, '/admin/probe_all', 'checking'));
-document.getElementById('dedupe').addEventListener('click', e => runAction(e.currentTarget, '/admin/dedupe', 'deduping'));
-document.getElementById('renumber').addEventListener('click', e => runAction(e.currentTarget, '/admin/renumber', 'renumbering'));
+document.getElementById('check-all').addEventListener('click', e => runAction(e.currentTarget, '/admin/probe_all', 'проверяю'));
+document.getElementById('dedupe').addEventListener('click', e => runAction(e.currentTarget, '/admin/dedupe', 'удаляю дубли'));
+document.getElementById('renumber').addEventListener('click', e => runAction(e.currentTarget, '/admin/renumber', 'перенумеровываю'));
 
-// =================== settings form ===================
+// =================== settings ===================
 const settingsForm = document.getElementById('settings-form');
 const settingsStatus = document.getElementById('settings-status');
 settingsForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(settingsForm);
-  settingsStatus.textContent = 'saving...';
+  settingsStatus.textContent = 'сохраняю...';
   try {
     const r = await fetch('/admin/settings', { method: 'POST', body: fd });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.detail || ('HTTP ' + r.status));
     }
-    settingsStatus.textContent = 'saved';
+    settingsStatus.textContent = 'сохранено';
     setTimeout(() => settingsStatus.textContent = '', 2000);
   } catch (err) {
-    settingsStatus.textContent = 'error: ' + err.message;
+    settingsStatus.textContent = 'ошибка: ' + err.message;
   }
 });
 
@@ -214,7 +291,7 @@ bulkDelBtn.addEventListener('click', () => {
   bulkDelBtn.style.display = 'none';
   bulkDelConfirm.style.display = '';
   bulkDelCancel.style.display = '';
-  bulkDelConfirm.textContent = `confirm delete (${getSelectedIds().length})`;
+  bulkDelConfirm.textContent = `Подтвердить удаление (${getSelectedIds().length})`;
   confirmTimer = setTimeout(resetConfirm, 5000);
 });
 
@@ -233,12 +310,12 @@ bulkDelConfirm.addEventListener('click', async () => {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     location.reload();
   } catch (e) {
-    alert('error: ' + e.message);
+    alert('Ошибка: ' + e.message);
     bulkDelConfirm.disabled = false;
   }
 });
 
-// =================== drag & drop sort ===================
+// =================== drag & drop sort + camera→tab move ===================
 let dragRow = null;
 
 tbody.querySelectorAll('tr').forEach(tr => {
@@ -258,11 +335,14 @@ tbody.querySelectorAll('tr').forEach(tr => {
     dragRow = tr;
     tr.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
+    document.body.classList.add('dragging-row');
   });
 
   tr.addEventListener('dragend', () => {
     tr.classList.remove('dragging');
+    document.body.classList.remove('dragging-row');
     tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drop-target'));
+    document.querySelectorAll('#tabs .drop-target').forEach(el => el.classList.remove('drop-target'));
     if (dragRow) saveOrder();
     dragRow = null;
   });
@@ -279,13 +359,43 @@ tbody.querySelectorAll('tr').forEach(tr => {
   });
 });
 
+// camera → tab move
+document.querySelectorAll('#tabs .tab-wrap').forEach(wrap => {
+  const targetId = parseInt(wrap.dataset.tabId, 10);
+  wrap.addEventListener('dragover', (e) => {
+    if (!dragRow) return;
+    e.preventDefault();
+    wrap.classList.add('drop-target');
+  });
+  wrap.addEventListener('dragleave', () => {
+    wrap.classList.remove('drop-target');
+  });
+  wrap.addEventListener('drop', async (e) => {
+    if (!dragRow) return;
+    e.preventDefault();
+    wrap.classList.remove('drop-target');
+    if (targetId === ACTIVE_TAB_ID) { dragRow = null; return; }
+    const camId = parseInt(dragRow.dataset.id, 10);
+    dragRow = null;
+    const fd = new FormData();
+    fd.append('tab_id', String(targetId));
+    try {
+      const r = await fetch(`/admin/cameras/${camId}/move`, { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      location.reload();
+    } catch (err) {
+      alert('Ошибка перемещения: ' + err.message);
+    }
+  });
+});
+
 async function saveOrder() {
   const order = [...tbody.querySelectorAll('tr')].map(r => parseInt(r.dataset.id, 10));
   try {
     const r = await fetch('/admin/reorder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order }),
+      body: JSON.stringify({ tab_id: ACTIVE_TAB_ID, order }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
   } catch (e) {
