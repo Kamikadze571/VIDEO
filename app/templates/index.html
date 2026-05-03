@@ -3,24 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MJPEG Grid</title>
+  <title>Cameras</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="top">
-    <h1>Cameras <span id="count">{{ cameras|length }}</span></h1>
+    <div class="brand">cameras<span class="dot">·</span><span class="count">{{ cameras|length }}</span></div>
     <div class="controls">
-      <label>Размер: <input type="range" id="size" min="160" max="640" value="320" step="20"></label>
-      <label>FPS: <input type="range" id="fps" min="1" max="15" value="5" step="1"><span id="fpsv">5</span></label>
-      <button id="pause">Pause</button>
-      <button id="edit-mode" title="Включить перетаскивание (нужен пароль)">✎ Edit</button>
-      <a href="/admin" class="btn">Admin</a>
+      <button id="pause">pause</button>
+      <button id="edit-mode" title="перетаскивание (нужен пароль)">edit</button>
+      <a href="/admin" class="btn">admin</a>
     </div>
   </header>
 
   <main id="grid" class="grid"
         data-cameras='{{ cameras|tojson }}'
-        style="--tile:320px"></main>
+        data-fps="{{ fps }}"
+        data-tile-size="{{ tile_size }}"
+        style="--tile:{{ tile_size }}px"></main>
 
   <script src="/static/app.js"></script>
 </body>

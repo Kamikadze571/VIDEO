@@ -1,15 +1,16 @@
 const grid = document.getElementById('grid');
 const cameras = JSON.parse(grid.dataset.cameras);
-const sizeInput = document.getElementById('size');
-const fpsInput = document.getElementById('fps');
-const fpsLabel = document.getElementById('fpsv');
+const FPS = parseFloat(grid.dataset.fps) || 5;
+const TILE = parseInt(grid.dataset.tileSize, 10) || 320;
 const pauseBtn = document.getElementById('pause');
 const editBtn = document.getElementById('edit-mode');
 
-let intervalMs = 1000 / parseInt(fpsInput.value, 10);
+const intervalMs = 1000 / FPS;
 let paused = false;
 let editMode = false;
 let authHeader = sessionStorage.getItem('admin_auth') || null;
+
+document.documentElement.style.setProperty('--tile', TILE + 'px');
 
 const tiles = new Map();
 
@@ -27,7 +28,7 @@ function buildTile(cam) {
     <img alt="">
     <span class="status"></span>
     <span class="label">${escapeHtml(cam.name)}</span>
-    <a class="live-link" href="/stream/${cam.id}" target="_blank" rel="noopener">Live</a>
+    <a class="live-link" href="/stream/${cam.id}" target="_blank" rel="noopener">live</a>
   `;
   const img = tile.querySelector('img');
   grid.appendChild(tile);
@@ -36,6 +37,7 @@ function buildTile(cam) {
 
 cameras.forEach(buildTile);
 
+// IntersectionObserver: грузим только видимые ±200px
 const io = new IntersectionObserver((entries) => {
   for (const e of entries) {
     const id = parseInt(e.target.dataset.id, 10);
@@ -79,18 +81,10 @@ function requestSnap(t, now) {
 
 setInterval(tick, 50);
 
-// =================== controls ===================
-sizeInput.addEventListener('input', () => {
-  document.documentElement.style.setProperty('--tile', sizeInput.value + 'px');
-});
-fpsInput.addEventListener('input', () => {
-  const fps = parseInt(fpsInput.value, 10);
-  fpsLabel.textContent = fps;
-  intervalMs = 1000 / fps;
-});
 pauseBtn.addEventListener('click', () => {
   paused = !paused;
-  pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+  pauseBtn.textContent = paused ? 'resume' : 'pause';
+  pauseBtn.classList.toggle('active', paused);
 });
 
 grid.addEventListener('dblclick', (e) => {
@@ -113,14 +107,14 @@ async function checkAuth(header) {
 async function ensureAuth() {
   if (authHeader && await checkAuth(authHeader)) return true;
 
-  const login = prompt('Логин админа:', 'admin');
+  const login = prompt('admin login:', 'admin');
   if (!login) return false;
-  const password = prompt('Пароль:');
+  const password = prompt('password:');
   if (password == null) return false;
 
   const header = 'Basic ' + btoa(`${login}:${password}`);
   if (!(await checkAuth(header))) {
-    alert('Неверный логин/пароль');
+    alert('wrong credentials');
     return false;
   }
   authHeader = header;
@@ -140,7 +134,7 @@ editBtn.addEventListener('click', async () => {
 function setEditMode(on) {
   editMode = on;
   document.body.classList.toggle('edit-mode', on);
-  editBtn.textContent = on ? '✓ Done' : '✎ Edit';
+  editBtn.textContent = on ? 'done' : 'edit';
   editBtn.classList.toggle('active', on);
 
   for (const { tile } of tiles.values()) {
@@ -179,7 +173,6 @@ function attachDragHandlers(tile) {
     if (!editMode || !dragTile || dragTile === tile) return;
     e.preventDefault();
     const rect = tile.getBoundingClientRect();
-    // 2D: после, если клик ниже центра ИЛИ правее центра в нижней половине
     const after =
       (e.clientY - rect.top) > rect.height / 2 ||
       ((e.clientY - rect.top) > rect.height * 0.25 &&
@@ -208,7 +201,7 @@ async function saveOrder() {
     if (r.status === 401) {
       sessionStorage.removeItem('admin_auth');
       authHeader = null;
-      alert('Сессия истекла, нажмите Edit ещё раз');
+      alert('session expired');
       setEditMode(false);
       return;
     }
