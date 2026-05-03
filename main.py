@@ -27,6 +27,8 @@ ADMIN_LOGIN = os.getenv("ADMIN_LOGIN", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "strongpassword123")
 STREAM_FPS = float(os.getenv("STREAM_FPS", "5.0"))
 DEFAULT_IP_TEMPLATE = os.getenv("IP_URL_TEMPLATE", "http://{ip}/snapshot.cgi")
+DEFAULT_FPS = float(os.getenv("DEFAULT_FPS", "5.0"))
+DEFAULT_TILE_SIZE = int(os.getenv("DEFAULT_TILE_SIZE", "320"))
 
 http_client: httpx.AsyncClient | None = None
 sem: asyncio.Semaphore | None = None
@@ -47,6 +49,21 @@ def auth(creds: HTTPBasicCredentials = Depends(security)):
     return creds.username
 
 
+async def load_global_settings() -> dict:
+    fps_raw = await db.get_setting("default_fps", str(DEFAULT_FPS))
+    tile_raw = await db.get_setting("tile_size", str(DEFAULT_TILE_SIZE))
+    tpl = await db.get_setting("ip_url_template", DEFAULT_IP_TEMPLATE)
+    try:
+        fps = float(fps_raw)
+    except (TypeError, ValueError):
+        fps = DEFAULT_FPS
+    try:
+        tile = int(tile_raw)
+    except (TypeError, ValueError):
+        tile = DEFAULT_TILE_SIZE
+    return {"fps": fps, "tile_size": tile, "ip_url_template": tpl}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client, sem
@@ -55,6 +72,10 @@ async def lifespan(app: FastAPI):
 
     if await db.get_setting("ip_url_template") is None:
         await db.set_setting("ip_url_template", DEFAULT_IP_TEMPLATE)
+    if await db.get_setting("default_fps") is None:
+        await db.set_setting("default_fps", str(DEFAULT_FPS))
+    if await db.get_setting("tile_size") is None:
+        await db.set_setting("tile_size", str(DEFAULT_TILE_SIZE))
 
     limits = httpx.Limits(max_keepalive_connections=64, max_connections=128)
     http_client = httpx.AsyncClient(
@@ -88,11 +109,6 @@ _IP_RE = re.compile(
 
 
 def expand_ip(line: str, template: str) -> str:
-    """
-    Принимает 'IP' или 'IP:port' и подставляет в шаблон.
-    Шаблон должен содержать {ip} (опционально {port}).
-    Если в строке не IP — возвращает её без изменений.
-    """
     line = line.strip()
     m = _IP_RE.match(line)
     if not m:
@@ -101,11 +117,9 @@ def expand_ip(line: str, template: str) -> str:
     port = m.group(2)
     if "{ip}" in template:
         if "{port}" in template:
-            out = template.replace("{ip}", ip).replace("{port}", port or "")
-        else:
-            target = ip + (f":{port}" if port else "")
-            out = template.replace("{ip}", target)
-        return out
+            return template.replace("{ip}", ip).replace("{port}", port or "")
+        target = ip + (f":{port}" if port else "")
+        return template.replace("{ip}", target)
     target = ip + (f":{port}" if port else "")
     return f"{template.rstrip('/')}/{target}"
 
@@ -119,13 +133,33 @@ async def _probe(url: str) -> bool:
         return False
 
 
+def _next_default_name(existing: list[dict]) -> int:
+    """Возвращает следующий N для имени 'Camera N' с учётом существующих."""
+    used = set()
+    for c in existing:
+        m = re.match(r"^Camera (\d+)$", c["name"] or "")
+        if m:
+            used.add(int(m.group(1)))
+    n = 1
+    while n in used:
+        n += 1
+    return n
+
+
 # ---------------- public ----------------
 
 @app.get("/")
 async def index(request: Request):
     cams = await db.list_cameras(only_active=True)
+    settings = await load_global_settings()
     return templates.TemplateResponse(
-        "index.html", {"request": request, "cameras": cams}
+        "index.html",
+        {
+            "request": request,
+            "cameras": cams,
+            "fps": settings["fps"],
+            "tile_size": settings["tile_size"],
+        },
     )
 
 
@@ -199,30 +233,44 @@ async def stream(cam_id: int):
 @app.get("/admin")
 async def admin(request: Request, _: str = Depends(auth)):
     cams = await db.list_cameras()
-    template = await db.get_setting("ip_url_template", DEFAULT_IP_TEMPLATE)
+    settings = await load_global_settings()
     return templates.TemplateResponse(
         "admin.html",
-        {"request": request, "cameras": cams, "ip_template": template},
+        {
+            "request": request,
+            "cameras": cams,
+            "ip_template": settings["ip_url_template"],
+            "default_fps": settings["fps"],
+            "tile_size": settings["tile_size"],
+        },
     )
 
 
 @app.get("/admin/whoami")
 async def admin_whoami(user: str = Depends(auth)):
-    """Лёгкий пинг auth — для Edit Mode на главной."""
     return JSONResponse({"user": user, "ok": True})
 
 
 @app.post("/admin/add")
 async def admin_add(
-    name: str = Form(...),
+    name: str = Form(""),
     url: str = Form(...),
     _: str = Depends(auth),
 ):
-    name, url = name.strip(), url.strip()
-    if not name or not url:
-        raise HTTPException(400, "name/url required")
+    url = url.strip()
+    if not url:
+        raise HTTPException(400, "url required")
+    if await db.find_by_url(url):
+        # не добавляем дубль — редирект с флагом в query
+        return RedirectResponse("/admin?dup=1", status_code=303)
+
+    existing = await db.list_cameras()
+    if not name.strip():
+        name = f"Camera {_next_default_name(existing)}"
+
     active = 1 if await _probe(url) else 0
-    await db.add_camera(name, url, active=active)
+    await db.add_camera(name.strip(), url, active=active)
+    await db.renumber()
     return RedirectResponse("/admin", status_code=303)
 
 
@@ -233,9 +281,9 @@ async def admin_bulk_add(
     template: str = Form(""),
     _: str = Depends(auth),
 ):
-    lines = [u.strip() for u in urls.splitlines() if u.strip()]
-    if not lines:
-        return JSONResponse({"added": 0, "results": []})
+    raw_lines = [u.strip() for u in urls.splitlines() if u.strip()]
+    if not raw_lines:
+        return JSONResponse({"added": 0, "skipped": 0, "results": []})
 
     if as_ip:
         tpl = (template or "").strip() or await db.get_setting(
@@ -246,21 +294,37 @@ async def admin_bulk_add(
                 {"error": "template must contain {ip}"}, status_code=400
             )
         await db.set_setting("ip_url_template", tpl)
-        lines = [expand_ip(line, tpl) for line in lines]
+        raw_lines = [expand_ip(line, tpl) for line in raw_lines]
+
+    # дедупликация: внутри списка + против БД
+    existing_urls = {c["url"] for c in await db.list_cameras()}
+    seen: set[str] = set()
+    lines: list[str] = []
+    skipped = 0
+    for u in raw_lines:
+        if u in existing_urls or u in seen:
+            skipped += 1
+            continue
+        seen.add(u)
+        lines.append(u)
+
+    if not lines:
+        return JSONResponse({"added": 0, "skipped": skipped, "results": []})
 
     probes = await asyncio.gather(*[_probe(u) for u in lines])
 
-    existing = await db.list_cameras()
-    next_n = len(existing) + 1
-
     results = []
     for url, ok in zip(lines, probes):
-        name = f"Camera {next_n}"
+        # имя с дефолтной нумерацией — финально проставится через renumber()
+        existing = await db.list_cameras()
+        name = f"Camera {_next_default_name(existing)}"
         cam_id = await db.add_camera(name, url, active=1 if ok else 0)
         results.append({"id": cam_id, "url": url, "name": name, "ok": ok})
-        next_n += 1
 
-    return JSONResponse({"added": len(results), "results": results})
+    await db.renumber()
+    return JSONResponse(
+        {"added": len(results), "skipped": skipped, "results": results}
+    )
 
 
 @app.post("/admin/delete/{cam_id}")
@@ -268,6 +332,7 @@ async def admin_delete(cam_id: int, _: str = Depends(auth)):
     await db.set_recording(cam_id, 0)
     await recorder.sync()
     await db.delete_camera(cam_id)
+    await db.renumber()
     return RedirectResponse("/admin", status_code=303)
 
 
@@ -281,7 +346,22 @@ async def admin_bulk_delete(request: Request, _: str = Depends(auth)):
         await db.set_recording(cid, 0)
     await recorder.sync()
     deleted = await db.delete_cameras(ids)
+    await db.renumber()
     return JSONResponse({"ok": True, "deleted": deleted})
+
+
+@app.post("/admin/dedupe")
+async def admin_dedupe(_: str = Depends(auth)):
+    deleted = await db.dedupe_by_url()
+    await recorder.sync()
+    await db.renumber()
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
+@app.post("/admin/renumber")
+async def admin_renumber(_: str = Depends(auth)):
+    await db.renumber()
+    return JSONResponse({"ok": True})
 
 
 @app.post("/admin/update/{cam_id}")
@@ -340,13 +420,27 @@ async def admin_probe_all(_: str = Depends(auth)):
 
 @app.post("/admin/settings")
 async def admin_settings(
-    ip_url_template: str = Form(...), _: str = Depends(auth)
+    ip_url_template: str = Form(...),
+    default_fps: float = Form(...),
+    tile_size: int = Form(...),
+    _: str = Depends(auth),
 ):
     tpl = ip_url_template.strip()
     if "{ip}" not in tpl:
-        raise HTTPException(400, "template must contain {ip}")
+        raise HTTPException(400, "ip_url_template must contain {ip}")
+    if not (0.5 <= default_fps <= 30):
+        raise HTTPException(400, "default_fps out of range (0.5-30)")
+    if not (120 <= tile_size <= 800):
+        raise HTTPException(400, "tile_size out of range (120-800)")
     await db.set_setting("ip_url_template", tpl)
-    return JSONResponse({"ok": True, "ip_url_template": tpl})
+    await db.set_setting("default_fps", str(default_fps))
+    await db.set_setting("tile_size", str(int(tile_size)))
+    return JSONResponse({
+        "ok": True,
+        "ip_url_template": tpl,
+        "default_fps": default_fps,
+        "tile_size": int(tile_size),
+    })
 
 
 # ---------------- recordings ----------------

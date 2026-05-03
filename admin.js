@@ -1,3 +1,10 @@
+// =================== thumbnails: hide broken ===================
+document.querySelectorAll('img.thumb').forEach(img => {
+  img.addEventListener('error', () => {
+    img.classList.add('thumb-broken');
+  });
+});
+
 // =================== bulk add ===================
 const bulkBtn = document.getElementById('bulk-add');
 const bulkArea = document.getElementById('bulk-urls');
@@ -15,7 +22,7 @@ bulkBtn.addEventListener('click', async () => {
   const text = bulkArea.value.trim();
   if (!text) return;
   bulkBtn.disabled = true;
-  bulkStatus.textContent = 'Проверяю и добавляю...';
+  bulkStatus.textContent = 'checking & adding...';
   bulkResults.innerHTML = '';
 
   try {
@@ -29,7 +36,9 @@ bulkBtn.addEventListener('click', async () => {
       throw new Error(err.error || ('HTTP ' + r.status));
     }
     const data = await r.json();
-    bulkStatus.textContent = `Добавлено: ${data.added}`;
+    let msg = `added: ${data.added}`;
+    if (data.skipped) msg += ` · skipped (duplicates): ${data.skipped}`;
+    bulkStatus.textContent = msg;
     for (const item of data.results) {
       const div = document.createElement('div');
       div.className = 'res ' + (item.ok ? 'ok' : 'err');
@@ -38,7 +47,7 @@ bulkBtn.addEventListener('click', async () => {
     }
     setTimeout(() => location.reload(), 1500);
   } catch (e) {
-    bulkStatus.textContent = 'Ошибка: ' + e.message;
+    bulkStatus.textContent = 'error: ' + e.message;
   } finally {
     bulkBtn.disabled = false;
   }
@@ -54,7 +63,7 @@ document.querySelectorAll('.rec-toggle').forEach(cb => {
       const r = await fetch(`/admin/recording/${id}`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error('HTTP ' + r.status);
     } catch (e) {
-      alert('Ошибка: ' + e.message);
+      alert('error: ' + e.message);
       cb.checked = !cb.checked;
     }
   });
@@ -73,12 +82,12 @@ document.querySelectorAll('.toggle-active').forEach(btn => {
       const r = await fetch(`/admin/active/${id}`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       btn.dataset.active = String(next);
-      btn.textContent = next ? '✓' : '✗';
+      btn.textContent = next ? 'on' : 'off';
       btn.closest('tr').classList.toggle('inactive', !next);
       const fc = btn.parentElement.querySelector('.fc');
       if (fc) fc.textContent = '0';
     } catch (e) {
-      alert('Ошибка: ' + e.message);
+      alert('error: ' + e.message);
     }
   });
 });
@@ -93,39 +102,69 @@ document.querySelectorAll('.probe').forEach(btn => {
     try {
       const r = await fetch(`/admin/probe/${id}`, { method: 'POST' });
       const data = await r.json();
-      btn.textContent = data.ok ? '✓ OK' : '✗ FAIL';
+      btn.textContent = data.ok ? 'ok' : 'fail';
       const tr = btn.closest('tr');
       tr.classList.toggle('inactive', !data.ok);
       const at = tr.querySelector('.toggle-active');
       if (at) {
         at.dataset.active = data.ok ? '1' : '0';
-        at.textContent = data.ok ? '✓' : '✗';
+        at.textContent = data.ok ? 'on' : 'off';
       }
       const fc = tr.querySelector('.fc');
       if (fc && data.ok) fc.textContent = '0';
       setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
     } catch (e) {
-      btn.textContent = 'ERR';
+      btn.textContent = 'err';
       btn.disabled = false;
     }
   });
 });
 
-// =================== probe all ===================
-const checkAllBtn = document.getElementById('check-all');
-const checkAllStatus = document.getElementById('check-all-status');
-checkAllBtn.addEventListener('click', async () => {
-  checkAllBtn.disabled = true;
-  checkAllStatus.textContent = 'Проверяю...';
+// =================== probe all / dedupe / renumber ===================
+const actionStatus = document.getElementById('action-status');
+
+async function runAction(btn, url, label) {
+  btn.disabled = true;
+  actionStatus.textContent = label + '...';
   try {
-    const r = await fetch('/admin/probe_all', { method: 'POST' });
+    const r = await fetch(url, { method: 'POST' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    checkAllStatus.textContent = `проверено ${data.checked}, ok ${data.ok}, fail ${data.fail}`;
+    if (typeof data.deleted === 'number') {
+      actionStatus.textContent = `removed: ${data.deleted}`;
+    } else if (typeof data.checked === 'number') {
+      actionStatus.textContent = `checked ${data.checked} · ok ${data.ok} · fail ${data.fail}`;
+    } else {
+      actionStatus.textContent = 'done';
+    }
     setTimeout(() => location.reload(), 800);
   } catch (e) {
-    checkAllStatus.textContent = 'Ошибка: ' + e.message;
-    checkAllBtn.disabled = false;
+    actionStatus.textContent = 'error: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('check-all').addEventListener('click', e => runAction(e.currentTarget, '/admin/probe_all', 'checking'));
+document.getElementById('dedupe').addEventListener('click', e => runAction(e.currentTarget, '/admin/dedupe', 'deduping'));
+document.getElementById('renumber').addEventListener('click', e => runAction(e.currentTarget, '/admin/renumber', 'renumbering'));
+
+// =================== settings form ===================
+const settingsForm = document.getElementById('settings-form');
+const settingsStatus = document.getElementById('settings-status');
+settingsForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(settingsForm);
+  settingsStatus.textContent = 'saving...';
+  try {
+    const r = await fetch('/admin/settings', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || ('HTTP ' + r.status));
+    }
+    settingsStatus.textContent = 'saved';
+    setTimeout(() => settingsStatus.textContent = '', 2000);
+  } catch (err) {
+    settingsStatus.textContent = 'error: ' + err.message;
   }
 });
 
@@ -175,7 +214,7 @@ bulkDelBtn.addEventListener('click', () => {
   bulkDelBtn.style.display = 'none';
   bulkDelConfirm.style.display = '';
   bulkDelCancel.style.display = '';
-  bulkDelConfirm.textContent = `Подтвердить удаление (${getSelectedIds().length})`;
+  bulkDelConfirm.textContent = `confirm delete (${getSelectedIds().length})`;
   confirmTimer = setTimeout(resetConfirm, 5000);
 });
 
@@ -194,7 +233,7 @@ bulkDelConfirm.addEventListener('click', async () => {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     location.reload();
   } catch (e) {
-    alert('Ошибка: ' + e.message);
+    alert('error: ' + e.message);
     bulkDelConfirm.disabled = false;
   }
 });
@@ -205,10 +244,9 @@ let dragRow = null;
 tbody.querySelectorAll('tr').forEach(tr => {
   tr.setAttribute('draggable', 'true');
 
-  // если зажали поле ввода/чекбокс — не даём начать drag
   tr.addEventListener('mousedown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' ||
-        e.target.tagName === 'A') {
+        e.target.tagName === 'A' || e.target.tagName === 'IMG') {
       tr.removeAttribute('draggable');
     } else {
       tr.setAttribute('draggable', 'true');

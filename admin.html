@@ -3,62 +3,90 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin · MJPEG Grid</title>
+  <title>admin · cameras</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="admin">
   <header class="top">
-    <h1>Admin</h1>
-    <a href="/" class="btn">← К сетке</a>
+    <div class="brand">admin</div>
+    <a href="/" class="btn">← grid</a>
   </header>
 
+  {% if request.query_params.get('dup') %}
+  <div class="card warn">
+    Камера с таким URL уже существует. Дубликат не добавлен.
+  </div>
+  {% endif %}
+
   <section class="card">
-    <h2>Добавить одну камеру</h2>
+    <h2>add one</h2>
     <form method="post" action="/admin/add" class="row">
-      <input name="name" placeholder="Название" required>
-      <input name="url" placeholder="http://host:port/snapshot?..." required style="flex:2">
-      <button type="submit">Добавить</button>
+      <input name="name" placeholder="имя (опционально, по умолчанию Camera N)">
+      <input name="url" placeholder="http://host:port/snapshot..." required style="flex:2">
+      <button type="submit">add</button>
     </form>
   </section>
 
   <section class="card">
-    <h2>Массовое добавление</h2>
-    <p class="muted">По одному значению на строку. Каждая камера будет проверена, нерабочие добавятся как неактивные.</p>
+    <h2>bulk add</h2>
+    <p class="muted">по одному значению на строку. дубликаты по url игнорируются.</p>
 
     <div class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:14px">
       <label class="switch">
         <input type="checkbox" id="bulk-as-ip">
-        <span>Добавить как IP (раскрыть по шаблону)</span>
+        <span>add as ip (раскрыть по шаблону)</span>
       </label>
     </div>
 
     <div id="ip-template-row" class="row" style="margin-bottom:8px;display:none">
       <input id="ip-template" value="{{ ip_template }}" placeholder="http://{ip}/snapshot.cgi" style="flex:2">
-      <span class="muted">плейсхолдеры: <code>{ip}</code> (опц. <code>{port}</code>)</span>
+      <span class="muted">плейсхолдеры: <code>{ip}</code> опц. <code>{port}</code></span>
     </div>
 
     <textarea id="bulk-urls" rows="6" placeholder="http://host1/snap&#10;http://host2/snap&#10;...&#10;&#10;# или в режиме IP:&#10;192.168.1.10&#10;192.168.1.11:8080"></textarea>
     <div class="row" style="margin-top:8px">
-      <button id="bulk-add">Добавить все</button>
+      <button id="bulk-add">add all</button>
       <span id="bulk-status" class="muted"></span>
     </div>
     <div id="bulk-results"></div>
   </section>
 
   <section class="card">
-    <div class="row" style="justify-content:space-between">
-      <h2 style="margin:0">Список ({{ cameras|length }}) — перетаскивай для сортировки</h2>
-      <div class="row">
-        <button id="check-all" class="btn">⟳ Проверить все</button>
-        <span id="check-all-status" class="muted"></span>
+    <h2>settings</h2>
+    <form id="settings-form" class="row" style="flex-wrap:wrap;gap:12px">
+      <label class="field">
+        <span>default fps</span>
+        <input name="default_fps" type="number" min="0.5" max="30" step="0.5" value="{{ default_fps }}">
+      </label>
+      <label class="field">
+        <span>tile size (px)</span>
+        <input name="tile_size" type="number" min="120" max="800" step="10" value="{{ tile_size }}">
+      </label>
+      <label class="field" style="flex:1;min-width:280px">
+        <span>ip url template</span>
+        <input name="ip_url_template" value="{{ ip_template }}" placeholder="http://{ip}/snapshot.cgi">
+      </label>
+      <button type="submit">save</button>
+      <span id="settings-status" class="muted"></span>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">cameras ({{ cameras|length }})</h2>
+      <div class="row" style="flex-wrap:wrap">
+        <button id="check-all">check all</button>
+        <button id="dedupe">remove dups</button>
+        <button id="renumber">renumber</button>
+        <span id="action-status" class="muted"></span>
       </div>
     </div>
 
     <div class="row" id="bulk-bar" style="margin:10px 0;gap:10px;display:none">
-      <strong><span id="sel-count">0</span> выбрано</strong>
-      <button id="bulk-delete" class="danger">Удалить выбранные</button>
-      <button id="bulk-delete-confirm" class="danger" style="display:none">Подтвердить удаление</button>
-      <button id="bulk-delete-cancel" style="display:none">Отмена</button>
+      <strong><span id="sel-count">0</span> selected</strong>
+      <button id="bulk-delete" class="danger">delete selected</button>
+      <button id="bulk-delete-confirm" class="danger" style="display:none">confirm delete</button>
+      <button id="bulk-delete-cancel" style="display:none">cancel</button>
     </div>
 
     <table class="cams">
@@ -66,19 +94,23 @@
         <tr>
           <th><input type="checkbox" id="sel-all"></th>
           <th></th>
-          <th>ID</th>
-          <th>Имя</th>
-          <th>URL</th>
-          <th title="Активна / счётчик ошибок">A / FC</th>
-          <th>Запись</th>
-          <th>Действия</th>
+          <th>preview</th>
+          <th>id</th>
+          <th>name</th>
+          <th>url</th>
+          <th title="active / fail count">a / fc</th>
+          <th>rec</th>
+          <th>actions</th>
         </tr>
       </thead>
       <tbody id="cams-tbody">
       {% for c in cameras %}
         <tr data-id="{{ c.id }}" class="{{ 'inactive' if not c.active else '' }}">
           <td><input type="checkbox" class="sel" data-id="{{ c.id }}"></td>
-          <td class="drag" title="Перетащить">⋮⋮</td>
+          <td class="drag" title="drag">⋮⋮</td>
+          <td class="thumb-cell">
+            <img class="thumb" src="/snap/{{ c.id }}" alt="" loading="lazy" data-id="{{ c.id }}">
+          </td>
           <td>{{ c.id }}</td>
           <td>
             <form method="post" action="/admin/update/{{ c.id }}" class="inline edit-form">
@@ -88,25 +120,25 @@
               <input name="url" value="{{ c.url }}" style="width:100%">
           </td>
           <td>
-              <button type="submit" title="Сохранить">💾</button>
+              <button type="submit" title="save">save</button>
             </form>
             <button class="toggle-active" data-id="{{ c.id }}" data-active="{{ 1 if c.active else 0 }}">
-              {{ '✓' if c.active else '✗' }}
+              {{ 'on' if c.active else 'off' }}
             </button>
-            <span class="fc" title="Подряд неудачных проверок">{{ c.fail_count or 0 }}</span>
+            <span class="fc" title="fail count">{{ c.fail_count or 0 }}</span>
           </td>
           <td>
             <label class="switch">
               <input type="checkbox" class="rec-toggle" data-id="{{ c.id }}" {{ 'checked' if c.recording else '' }}>
-              <span>REC</span>
+              <span>rec</span>
             </label>
           </td>
           <td class="actions">
-            <a class="btn small" href="/stream/{{ c.id }}" target="_blank">Live</a>
-            <a class="btn small" href="/admin/recordings/{{ c.id }}">Записи</a>
-            <button class="btn small probe" data-id="{{ c.id }}">Тест</button>
+            <a class="btn small" href="/stream/{{ c.id }}" target="_blank">live</a>
+            <a class="btn small" href="/admin/recordings/{{ c.id }}">files</a>
+            <button class="btn small probe" data-id="{{ c.id }}">test</button>
             <form method="post" action="/admin/delete/{{ c.id }}" class="inline">
-              <button type="submit" class="danger small" title="Удалить">🗑</button>
+              <button type="submit" class="danger small" title="delete">×</button>
             </form>
           </td>
         </tr>

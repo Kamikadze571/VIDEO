@@ -1,7 +1,10 @@
+import re
 import aiosqlite
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "cameras.db"
+
+_DEFAULT_NAME_RE = re.compile(r"^Camera \d+$")
 
 
 async def init_db():
@@ -62,6 +65,18 @@ async def get_camera(cam_id: int):
             "SELECT id, name, url, position, active, recording, "
             "fail_count, last_check FROM cameras WHERE id=?",
             (cam_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def find_by_url(url: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, name, url, position, active, recording, "
+            "fail_count, last_check FROM cameras WHERE url=? LIMIT 1",
+            (url,),
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -136,10 +151,6 @@ async def cameras_with_recording() -> list[dict]:
 
 
 async def mark_check_result(cam_id: int, ok: bool, fail_threshold: int = 3):
-    """
-    ok=True  → fail_count=0, active=1, last_check=now.
-    ok=False → fail_count++; при достижении порога active=0.
-    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -161,6 +172,40 @@ async def mark_check_result(cam_id: int, ok: bool, fail_threshold: int = 3):
                 "UPDATE cameras SET fail_count=?, active=?, "
                 "last_check=CURRENT_TIMESTAMP WHERE id=?",
                 (new_fc, new_active, cam_id),
+            )
+        await db.commit()
+
+
+async def dedupe_by_url() -> int:
+    """Удаляет дубликаты по URL, оставляя только первую (по position) камеру."""
+    cams = await list_cameras()
+    seen: set[str] = set()
+    to_delete: list[int] = []
+    for c in cams:
+        if c["url"] in seen:
+            to_delete.append(c["id"])
+        else:
+            seen.add(c["url"])
+    if to_delete:
+        await delete_cameras(to_delete)
+    return len(to_delete)
+
+
+async def renumber():
+    """
+    Пересчитывает position подряд (0..N-1) и переименовывает все камеры
+    с дефолтным именем 'Camera N' в правильную нумерацию.
+    Кастомные имена не трогает.
+    """
+    cams = await list_cameras()
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i, cam in enumerate(cams):
+            new_name = cam["name"]
+            if _DEFAULT_NAME_RE.match(cam["name"] or ""):
+                new_name = f"Camera {i + 1}"
+            await db.execute(
+                "UPDATE cameras SET position=?, name=? WHERE id=?",
+                (i, new_name, cam["id"]),
             )
         await db.commit()
 
