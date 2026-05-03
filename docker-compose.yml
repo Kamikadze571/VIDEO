@@ -17,3 +17,6 @@ services:
       - REC_SEGMENT_SECONDS=3600
       - ADMIN_LOGIN=admin
       - ADMIN_PASSWORD=strongpassword123
+      - HEALTH_CHECK_INTERVAL=600
+      - HEALTH_FAIL_THRESHOLD=3
+      - IP_URL_TEMPLATE=http://{ip}/snapshot.cgi

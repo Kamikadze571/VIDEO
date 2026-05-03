@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import db
 from .recorder import RecorderManager, REC_ROOT, list_recordings
+from .health import HealthLoop, check_all
 
 BASE = Path(__file__).parent
 SNAPSHOT_TIMEOUT = float(os.getenv("SNAPSHOT_TIMEOUT", "4.0"))
@@ -24,10 +26,12 @@ MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "32"))
 ADMIN_LOGIN = os.getenv("ADMIN_LOGIN", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "strongpassword123")
 STREAM_FPS = float(os.getenv("STREAM_FPS", "5.0"))
+DEFAULT_IP_TEMPLATE = os.getenv("IP_URL_TEMPLATE", "http://{ip}/snapshot.cgi")
 
 http_client: httpx.AsyncClient | None = None
 sem: asyncio.Semaphore | None = None
 recorder = RecorderManager()
+health = HealthLoop()
 security = HTTPBasic()
 
 
@@ -48,6 +52,10 @@ async def lifespan(app: FastAPI):
     global http_client, sem
     await db.init_db()
     REC_ROOT.mkdir(parents=True, exist_ok=True)
+
+    if await db.get_setting("ip_url_template") is None:
+        await db.set_setting("ip_url_template", DEFAULT_IP_TEMPLATE)
+
     limits = httpx.Limits(max_keepalive_connections=64, max_connections=128)
     http_client = httpx.AsyncClient(
         timeout=SNAPSHOT_TIMEOUT,
@@ -58,14 +66,57 @@ async def lifespan(app: FastAPI):
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     recorder.attach_client(http_client)
     await recorder.sync()
-    yield
-    await recorder.stop_all()
-    await http_client.aclose()
+    health.start(http_client, sem)
+    try:
+        yield
+    finally:
+        await health.stop()
+        await recorder.stop_all()
+        await http_client.aclose()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
+
+
+# ---------------- helpers ----------------
+
+_IP_RE = re.compile(
+    r"^((?:\d{1,3}\.){3}\d{1,3}|\[?[0-9a-fA-F:]+\]?)(?::(\d{1,5}))?$"
+)
+
+
+def expand_ip(line: str, template: str) -> str:
+    """
+    Принимает 'IP' или 'IP:port' и подставляет в шаблон.
+    Шаблон должен содержать {ip} (опционально {port}).
+    Если в строке не IP — возвращает её без изменений.
+    """
+    line = line.strip()
+    m = _IP_RE.match(line)
+    if not m:
+        return line
+    ip = m.group(1)
+    port = m.group(2)
+    if "{ip}" in template:
+        if "{port}" in template:
+            out = template.replace("{ip}", ip).replace("{port}", port or "")
+        else:
+            target = ip + (f":{port}" if port else "")
+            out = template.replace("{ip}", target)
+        return out
+    target = ip + (f":{port}" if port else "")
+    return f"{template.rstrip('/')}/{target}"
+
+
+async def _probe(url: str) -> bool:
+    try:
+        async with sem:
+            r = await http_client.get(url)
+        return r.status_code == 200 and bool(r.content)
+    except httpx.HTTPError:
+        return False
 
 
 # ---------------- public ----------------
@@ -94,9 +145,7 @@ async def snap(cam_id: int):
         except httpx.HTTPError as e:
             return JSONResponse({"error": str(e)}, status_code=502)
     if r.status_code != 200:
-        return JSONResponse(
-            {"error": f"upstream {r.status_code}"}, status_code=502
-        )
+        return JSONResponse({"error": f"upstream {r.status_code}"}, status_code=502)
     media = r.headers.get("content-type", "image/jpeg")
     return StreamingResponse(
         iter([r.content]),
@@ -150,9 +199,17 @@ async def stream(cam_id: int):
 @app.get("/admin")
 async def admin(request: Request, _: str = Depends(auth)):
     cams = await db.list_cameras()
+    template = await db.get_setting("ip_url_template", DEFAULT_IP_TEMPLATE)
     return templates.TemplateResponse(
-        "admin.html", {"request": request, "cameras": cams}
+        "admin.html",
+        {"request": request, "cameras": cams, "ip_template": template},
     )
+
+
+@app.get("/admin/whoami")
+async def admin_whoami(user: str = Depends(auth)):
+    """Лёгкий пинг auth — для Edit Mode на главной."""
+    return JSONResponse({"user": user, "ok": True})
 
 
 @app.post("/admin/add")
@@ -169,28 +226,30 @@ async def admin_add(
     return RedirectResponse("/admin", status_code=303)
 
 
-async def _probe(url: str) -> bool:
-    try:
-        async with sem:
-            r = await http_client.get(url)
-        return r.status_code == 200 and bool(r.content)
-    except httpx.HTTPError:
-        return False
-
-
 @app.post("/admin/bulk_add")
 async def admin_bulk_add(
     urls: str = Form(...),
+    as_ip: int = Form(0),
+    template: str = Form(""),
     _: str = Depends(auth),
 ):
     lines = [u.strip() for u in urls.splitlines() if u.strip()]
     if not lines:
         return JSONResponse({"added": 0, "results": []})
 
-    # параллельная проверка с глобальным семафором
+    if as_ip:
+        tpl = (template or "").strip() or await db.get_setting(
+            "ip_url_template", DEFAULT_IP_TEMPLATE
+        )
+        if "{ip}" not in tpl:
+            return JSONResponse(
+                {"error": "template must contain {ip}"}, status_code=400
+            )
+        await db.set_setting("ip_url_template", tpl)
+        lines = [expand_ip(line, tpl) for line in lines]
+
     probes = await asyncio.gather(*[_probe(u) for u in lines])
 
-    # узнаём текущее число камер для нумерации "Camera N"
     existing = await db.list_cameras()
     next_n = len(existing) + 1
 
@@ -210,6 +269,19 @@ async def admin_delete(cam_id: int, _: str = Depends(auth)):
     await recorder.sync()
     await db.delete_camera(cam_id)
     return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/bulk_delete")
+async def admin_bulk_delete(request: Request, _: str = Depends(auth)):
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+        raise HTTPException(400, "bad ids")
+    for cid in ids:
+        await db.set_recording(cid, 0)
+    await recorder.sync()
+    deleted = await db.delete_cameras(ids)
+    return JSONResponse({"ok": True, "deleted": deleted})
 
 
 @app.post("/admin/update/{cam_id}")
@@ -256,8 +328,25 @@ async def admin_probe(cam_id: int, _: str = Depends(auth)):
     if not cam:
         raise HTTPException(404, "camera not found")
     ok = await _probe(cam["url"])
-    await db.set_active(cam_id, 1 if ok else 0)
+    await db.mark_check_result(cam_id, ok)
     return JSONResponse({"ok": ok})
+
+
+@app.post("/admin/probe_all")
+async def admin_probe_all(_: str = Depends(auth)):
+    summary = await check_all(http_client, sem)
+    return JSONResponse(summary)
+
+
+@app.post("/admin/settings")
+async def admin_settings(
+    ip_url_template: str = Form(...), _: str = Depends(auth)
+):
+    tpl = ip_url_template.strip()
+    if "{ip}" not in tpl:
+        raise HTTPException(400, "template must contain {ip}")
+    await db.set_setting("ip_url_template", tpl)
+    return JSONResponse({"ok": True, "ip_url_template": tpl})
 
 
 # ---------------- recordings ----------------
@@ -280,7 +369,6 @@ async def recordings_index(
 async def recordings_download(
     cam_id: int, name: str, _: str = Depends(auth)
 ):
-    # name = "{cam_id}_{date}/HHMMSS.mjpeg"
     safe = Path(name)
     if safe.is_absolute() or ".." in safe.parts:
         raise HTTPException(400, "bad path")

@@ -9,8 +9,8 @@ import httpx
 from . import db
 
 REC_ROOT = Path(__file__).parent.parent / "recordings"
-SEGMENT_BYTES = int(os.getenv("REC_SEGMENT_BYTES", str(100 * 1024 * 1024)))  # 100 MB
-SEGMENT_SECONDS = int(os.getenv("REC_SEGMENT_SECONDS", str(3600)))  # 1 час
+SEGMENT_BYTES = int(os.getenv("REC_SEGMENT_BYTES", str(100 * 1024 * 1024)))
+SEGMENT_SECONDS = int(os.getenv("REC_SEGMENT_SECONDS", str(3600)))
 REC_FPS = float(os.getenv("REC_FPS", "5.0"))
 BOUNDARY = b"--frame"
 
@@ -54,7 +54,6 @@ class CameraRecorder:
                 except (httpx.HTTPError, OSError):
                     pass
 
-                # ротация
                 now = asyncio.get_event_loop().time()
                 if (
                     seg_bytes >= SEGMENT_BYTES
@@ -65,7 +64,6 @@ class CameraRecorder:
                     seg_started = now
                     seg_bytes = 0
 
-                # держим ритм
                 dt = asyncio.get_event_loop().time() - t0
                 sleep_for = max(0.0, interval - dt)
                 try:
@@ -102,16 +100,13 @@ class RecorderManager:
         self.client = client
 
     async def sync(self):
-        """Синхронизирует воркеры с состоянием БД."""
         if self.client is None:
             return
         cams = {c["id"]: c for c in await db.cameras_with_recording()}
-        # стопаем убранные
         for cam_id in list(self.workers.keys()):
             if cam_id not in cams:
                 await self.workers[cam_id].stop()
                 del self.workers[cam_id]
-        # стартуем новые
         for cam_id, cam in cams.items():
             if cam_id not in self.workers:
                 w = CameraRecorder(cam, self.client)

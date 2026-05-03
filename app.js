@@ -4,11 +4,20 @@ const sizeInput = document.getElementById('size');
 const fpsInput = document.getElementById('fps');
 const fpsLabel = document.getElementById('fpsv');
 const pauseBtn = document.getElementById('pause');
+const editBtn = document.getElementById('edit-mode');
 
 let intervalMs = 1000 / parseInt(fpsInput.value, 10);
 let paused = false;
+let editMode = false;
+let authHeader = sessionStorage.getItem('admin_auth') || null;
 
 const tiles = new Map();
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
 
 function buildTile(cam) {
   const tile = document.createElement('div');
@@ -25,12 +34,6 @@ function buildTile(cam) {
   tiles.set(cam.id, { tile, img, visible: false, lastLoad: 0, inflight: false, cam });
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
 cameras.forEach(buildTile);
 
 const io = new IntersectionObserver((entries) => {
@@ -44,6 +47,7 @@ const io = new IntersectionObserver((entries) => {
 
 tiles.forEach(({ tile }) => io.observe(tile));
 
+// =================== refresh loop ===================
 function tick() {
   if (paused) return;
   const now = performance.now();
@@ -75,6 +79,7 @@ function requestSnap(t, now) {
 
 setInterval(tick, 50);
 
+// =================== controls ===================
 sizeInput.addEventListener('input', () => {
   document.documentElement.style.setProperty('--tile', sizeInput.value + 'px');
 });
@@ -90,8 +95,125 @@ pauseBtn.addEventListener('click', () => {
 
 grid.addEventListener('dblclick', (e) => {
   if (e.target.closest('.live-link')) return;
+  if (editMode) return;
   const tile = e.target.closest('.tile');
   if (!tile) return;
   if (document.fullscreenElement) document.exitFullscreen();
   else tile.requestFullscreen();
 });
+
+// =================== edit mode + auth ===================
+async function checkAuth(header) {
+  const r = await fetch('/admin/whoami', {
+    headers: header ? { 'Authorization': header } : {},
+  });
+  return r.ok;
+}
+
+async function ensureAuth() {
+  if (authHeader && await checkAuth(authHeader)) return true;
+
+  const login = prompt('Логин админа:', 'admin');
+  if (!login) return false;
+  const password = prompt('Пароль:');
+  if (password == null) return false;
+
+  const header = 'Basic ' + btoa(`${login}:${password}`);
+  if (!(await checkAuth(header))) {
+    alert('Неверный логин/пароль');
+    return false;
+  }
+  authHeader = header;
+  sessionStorage.setItem('admin_auth', header);
+  return true;
+}
+
+editBtn.addEventListener('click', async () => {
+  if (editMode) {
+    setEditMode(false);
+    return;
+  }
+  if (!(await ensureAuth())) return;
+  setEditMode(true);
+});
+
+function setEditMode(on) {
+  editMode = on;
+  document.body.classList.toggle('edit-mode', on);
+  editBtn.textContent = on ? '✓ Done' : '✎ Edit';
+  editBtn.classList.toggle('active', on);
+
+  for (const { tile } of tiles.values()) {
+    if (on) {
+      tile.setAttribute('draggable', 'true');
+      attachDragHandlers(tile);
+    } else {
+      tile.removeAttribute('draggable');
+    }
+  }
+}
+
+// =================== drag & drop ===================
+let dragTile = null;
+
+function attachDragHandlers(tile) {
+  if (tile.__dragAttached) return;
+  tile.__dragAttached = true;
+
+  tile.addEventListener('dragstart', (e) => {
+    if (!editMode) { e.preventDefault(); return; }
+    dragTile = tile;
+    tile.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', tile.dataset.id); } catch {}
+  });
+
+  tile.addEventListener('dragend', async () => {
+    tile.classList.remove('dragging');
+    grid.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
+    if (dragTile) await saveOrder();
+    dragTile = null;
+  });
+
+  tile.addEventListener('dragover', (e) => {
+    if (!editMode || !dragTile || dragTile === tile) return;
+    e.preventDefault();
+    const rect = tile.getBoundingClientRect();
+    // 2D: после, если клик ниже центра ИЛИ правее центра в нижней половине
+    const after =
+      (e.clientY - rect.top) > rect.height / 2 ||
+      ((e.clientY - rect.top) > rect.height * 0.25 &&
+        (e.clientX - rect.left) > rect.width / 2);
+    grid.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
+    tile.classList.add('drop-target');
+    if (after) tile.after(dragTile);
+    else tile.before(dragTile);
+  });
+
+  tile.addEventListener('drop', (e) => e.preventDefault());
+}
+
+async function saveOrder() {
+  const order = [...grid.querySelectorAll('.tile')]
+    .map(t => parseInt(t.dataset.id, 10));
+  try {
+    const r = await fetch('/admin/reorder', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader || '',
+      },
+      body: JSON.stringify({ order }),
+    });
+    if (r.status === 401) {
+      sessionStorage.removeItem('admin_auth');
+      authHeader = null;
+      alert('Сессия истекла, нажмите Edit ещё раз');
+      setEditMode(false);
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    console.error('reorder failed', e);
+  }
+}
