@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · MJPEG Grid</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin">
+  <header class="top">
+    <h1>Admin</h1>
+    <a href="/" class="btn">← К сетке</a>
+  </header>
+
+  <section class="card">
+    <h2>Добавить одну камеру</h2>
+    <form method="post" action="/admin/add" class="row">
+      <input name="name" placeholder="Название" required>
+      <input name="url" placeholder="http://host:port/snapshot?..." required style="flex:2">
+      <button type="submit">Добавить</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Массовое добавление</h2>
+    <p class="muted">По одному значению на строку. Каждая камера будет проверена, нерабочие добавятся как неактивные.</p>
+
+    <div class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:14px">
+      <label class="switch">
+        <input type="checkbox" id="bulk-as-ip">
+        <span>Добавить как IP (раскрыть по шаблону)</span>
+      </label>
+    </div>
+
+    <div id="ip-template-row" class="row" style="margin-bottom:8px;display:none">
+      <input id="ip-template" value="{{ ip_template }}" placeholder="http://{ip}/snapshot.cgi" style="flex:2">
+      <span class="muted">плейсхолдеры: <code>{ip}</code> (опц. <code>{port}</code>)</span>
+    </div>
+
+    <textarea id="bulk-urls" rows="6" placeholder="http://host1/snap&#10;http://host2/snap&#10;...&#10;&#10;# или в режиме IP:&#10;192.168.1.10&#10;192.168.1.11:8080"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="bulk-add">Добавить все</button>
+      <span id="bulk-status" class="muted"></span>
+    </div>
+    <div id="bulk-results"></div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Список ({{ cameras|length }}) — перетаскивай для сортировки</h2>
+      <div class="row">
+        <button id="check-all" class="btn">⟳ Проверить все</button>
+        <span id="check-all-status" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="row" id="bulk-bar" style="margin:10px 0;gap:10px;display:none">
+      <strong><span id="sel-count">0</span> выбрано</strong>
+      <button id="bulk-delete" class="danger">Удалить выбранные</button>
+      <button id="bulk-delete-confirm" class="danger" style="display:none">Подтвердить удаление</button>
+      <button id="bulk-delete-cancel" style="display:none">Отмена</button>
+    </div>
+
+    <table class="cams">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="sel-all"></th>
+          <th></th>
+          <th>ID</th>
+          <th>Имя</th>
+          <th>URL</th>
+          <th title="Активна / счётчик ошибок">A / FC</th>
+          <th>Запись</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody id="cams-tbody">
+      {% for c in cameras %}
+        <tr data-id="{{ c.id }}" class="{{ 'inactive' if not c.active else '' }}">
+          <td><input type="checkbox" class="sel" data-id="{{ c.id }}"></td>
+          <td class="drag" title="Перетащить">⋮⋮</td>
+          <td>{{ c.id }}</td>
+          <td>
+            <form method="post" action="/admin/update/{{ c.id }}" class="inline edit-form">
+              <input name="name" value="{{ c.name }}">
+          </td>
+          <td>
+              <input name="url" value="{{ c.url }}" style="width:100%">
+          </td>
+          <td>
+              <button type="submit" title="Сохранить">💾</button>
+            </form>
+            <button class="toggle-active" data-id="{{ c.id }}" data-active="{{ 1 if c.active else 0 }}">
+              {{ '✓' if c.active else '✗' }}
+            </button>
+            <span class="fc" title="Подряд неудачных проверок">{{ c.fail_count or 0 }}</span>
+          </td>
+          <td>
+            <label class="switch">
+              <input type="checkbox" class="rec-toggle" data-id="{{ c.id }}" {{ 'checked' if c.recording else '' }}>
+              <span>REC</span>
+            </label>
+          </td>
+          <td class="actions">
+            <a class="btn small" href="/stream/{{ c.id }}" target="_blank">Live</a>
+            <a class="btn small" href="/admin/recordings/{{ c.id }}">Записи</a>
+            <button class="btn small probe" data-id="{{ c.id }}">Тест</button>
+            <form method="post" action="/admin/delete/{{ c.id }}" class="inline">
+              <button type="submit" class="danger small" title="Удалить">🗑</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
